@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=8">
+<script language="JavaScript">
+// ---------------------------------------
+var appFullName = "ASConsole (Active Script Console)";
+var appName     = "ASConsole";
+var appVersion  = "2.00";
+// copyright kanegon 2003-2018
+// ---------------------------------------
+</script>
+<script>
+    var winwidth = 640;
+    var winheight = 480;
+    window.resizeTo(winwidth, winheight);
+    var screenPosX = (screen.availWidth - winwidth) / 2;
+    var screenPosY = (screen.availHeight - winheight) / 2;
+    window.moveTo(screenPosX, screenPosY);
+</script>
+<hta:application
+      ID="app"
+      APPLICATIONNAME="ASConsole"
+      BORDER="thick"
+      BORDERSTYLE="normal"
+      CAPTION="yes"
+      CONTEXTMENU="yes"
+      ICON="ascon.ico"
+      INNERBORDER="no"
+      MAXIMIZEBUTTON="yes"
+      MINIMIZEBUTTON="yes"
+      NAVIGABLE="no"
+      SCROLL="no"
+      SCROLLFLAT="no"
+      SELECTION="no"
+      SHOWINTASKBAR="yes"
+      SINGLEINSTANCE="yes"
+      SYSMENU="yes"
+      WINDOWSTATE="normal"
+  >
+<title>ASConsole</title>
+<style>
+    * { font-family:MS ÉSÉVÉbÉN, Arial, sans-serif; font-size:13px; }
+    * { margin:0; padding:0; margin:0; padding:0; }
+    body,div { background-color:menu; }
+    div,input,textarea { position:absolute; }
+    input,textarea { box-sizing:border-box; }
+    input { display:inline; vertical-align:middle; }
+</style>
+
+<script language="JavaScript" src="./common.js"></script>
+<script language="JavaScript" src="./config.js"></script>
+<script language="JavaScript" src="./resource.js"></script>
+<script language="JavaScript" src="./util.js"></script>
+<script language="JavaScript" src="./scriptmanager.js"></script>
+<script language="JavaScript" src="./help.js"></script>
+
+<script language="JavaScript">
+var currentScript = scriptManager.getScript(defaultScript);
+var cmdtextFocused = true;
+var instanceMode = "";
+var multilineEdit = false;
+var cmdtext = null;
+
+
+function updateTitle()
+{
+	var title = appName;
+	if (! __isEmpty(instanceMode)) {
+		title += " (" + instanceMode + ")";
+	}
+	var scriptName = currentScript.getName();
+	if (! __isEmpty(scriptName)) {
+		title += " - " + scriptName;
+	}
+	if (scriptName == "JavaScript") {
+		if (utils.jsBrowserAttached) {
+			title += __formatstr("  (attached: {0})", [utils.jsBrowserTitle]);
+		}
+	}
+	document.title = title;
+}
+
+function addHistoryBuffer(text)
+{
+	historyBuffer.addText(text);
+}
+
+function resetHistoryIndex(text)
+{
+	historyBuffer.resetIndex();
+}
+
+function prevHistoryIndex()
+{
+	if (historyBuffer.prevIndex()) {
+		if (multilineEdit) {
+			cmdtextm.value = historyBuffer.getText();
+		}
+		else {
+			cmdtexts.value = historyBuffer.getLabel();
+		}
+		cmdtext.focus();
+	}
+}
+
+function nextHistoryIndex()
+{
+	if (historyBuffer.nextIndex()) {
+		if (multilineEdit) {
+			cmdtextm.value = historyBuffer.getText();
+		}
+		else {
+			cmdtexts.value = historyBuffer.getLabel();
+		}
+		cmdtext.focus();
+	}
+}
+
+function showScriptNames()
+{
+	var scriptNames = scriptManager.getScriptNames();
+	var currentName = currentScript.getName();
+	consoleBuffer.println("<< script engine (*:active) >>");
+	for (i in scriptNames) {
+		var name = scriptNames[i];
+		consoleBuffer.println(((name == currentName) ? "*" : " ") + name);
+	}
+	consoleBuffer.println();
+	updateConsole();
+	updateTitle();
+}
+
+function changeScriptEngine(scriptName, disableShowNames)
+{
+	if (__isEmpty(scriptName)) {
+		showScriptNames()
+		return;
+	}
+	var script = scriptManager.getScript(scriptName);
+	if (script == null) {
+		utils.printError(__formatstr(utils.getText("SCRIPT_ENGINE_NOT_FOUND"), [scriptName]));
+		updateConsole();
+		return;
+	}
+	currentScript = script;
+	layoutManager.setPrompt();
+	if (! disableShowNames) {
+		showScriptNames()
+		currentScript.onActive();
+		updateConsole();
+	}
+}
+
+function execApp(cmd)
+{
+	try {
+		objShell.Exec(cmd)
+	}
+	catch(e) {
+		utils.printError(formatError(e));
+		updateConsole();
+		return false;
+	}
+	return true;
+}
+
+function execScript(cmd)
+{
+	try {
+		var prompt = currentScript.getShortName() + "> ";
+		if (currentScript.getName() == "JavaScript" && utils.jsBrowserAttached) {
+			prompt = ">>> ";
+		}
+		consoleBuffer.println(prompt + cmd);
+		var result = currentScript.eval(cmd);
+		if (result.status == "success") {
+			consoleBuffer.println("=>"+__tostr(result.result));
+		}
+		else {
+			consoleBuffer.println(__tostr(result.result));
+		}
+		updateConsole();
+	}
+	catch(e) {
+		utils.printError(formatError(e));
+		updateConsole();
+		return false;
+	}
+	if (currentScript.getName() == "JavaScript") {
+		if (utils.jsBrowserAttached != utils.jsBrowserAttachedPrev) {
+			utils.jsBrowserAttachedPrev = utils.jsBrowserAttached;
+			updateTitle();
+			layoutManager.setPrompt(utils.jsBrowserAttached);
+		}
+	}
+	return true;
+}
+
+// add commandline to history buffer: return true
+// drop commandline:                  return false
+function execCommand(command)
+{
+	var text = __trim(command).replace(/\r*\n/g, "\n");
+	if (text == "") {
+		return false;
+	}
+	if (text.indexOf("#") == 0) {
+		if (text.indexOf("#multiline") != 0) {
+			return execSysCommand(text);
+		}
+	}
+	text = historyBuffer.getCorrectText(text);
+	execScript(text)
+	return true;
+}
+
+function execSysCommand(command)
+{
+	if (/^#\s*(!|\S+)\s*(.*)/.exec(command) == null) {
+		return false;
+	}
+	var cmd = RegExp.$1
+	var param = RegExp.$2
+	if (cmd == "") {
+		return false;
+	} else if (cmd == "!") {
+		consoleBuffer.println("> " + command);
+		updateConsole();
+		execApp(param);
+		return true;
+	} else if (cmd == "version" || cmd == "ver") {
+		consoleBuffer.println("> " + command);
+		showVersion();
+		return true;
+	} else if (cmd == "clear") {
+		clearConsole();
+		return true;
+	} else if (cmd == "exit" || cmd == "quit") {
+		window.close();
+		return false;
+	} else if (cmd == "cs") {
+		consoleBuffer.println("> " + command);
+		changeScriptEngine(param);
+		return true;
+	} else if (cmd == "copy") {
+		consoleBuffer.println("> " + command);
+		clipboardData.setData("Text", document.getElementById("console").value);
+		updateConsole();
+		return true;
+	} else if (cmd == "editor") {
+		if (__isEmpty(__trim(param))) {
+			consoleBuffer.println("> " + command);
+			consoleBuffer.println("editor = " + clipboardEditor);
+			updateConsole();
+			return true;
+		}
+		clipboardEditor = __trim(param.replace(/\r*\n/g, ' '));
+		consoleBuffer.println("> " + command);
+		updateConsole();
+		return true;
+	} else if (cmd == "edit") {
+		consoleBuffer.println("> " + command);
+		if (clipboardEditor == "") {
+			utils.printError("ASConsole: clipboardEditor is not defined.");
+			updateConsole();
+			return true;
+		}
+		clipboardData.setData("Text", document.getElementById("console").value);
+		updateConsole();
+		execApp(clipboardEditor);
+		return true;
+	} else if (cmd == "enterexec") {
+		consoleBuffer.println("> " + command);
+		if (__isEmpty(__trim(param))) {
+			consoleBuffer.println(__formatstr("enterExec = {0}", [multilineEnterExec ? 'true': 'false']));
+			updateConsole();
+			return true;
+		}
+		param = __trim(param);
+		if (param != 'true' && param != 'false') {
+			utils.printError("ASConsole: bad parameter.");
+			updateConsole();
+			return true;
+		}
+		multilineEnterExec = (param == 'true')? true: false;
+		updateConsole();
+		return true;
+	} else if (command.indexOf("##") == 0) {
+		if (/^## *(.*)$/.exec(command) != null) {
+			param = RegExp.$1;
+		}
+		if (param != "") {
+			consoleBuffer.println("> " + command);
+			utils.printError("ASConsole: wrong parameter");
+			updateConsole();
+			return true;
+		}
+		consoleBuffer.println("> " + command);
+		historyBuffer.dump();
+		updateConsole();
+		return false;
+	} else if (cmd == "alias") {
+		consoleBuffer.println("> " + command);
+		if (param == "") {
+			aliasManager.dump();
+			updateConsole();
+			return true;
+		}
+		var keyword = null;
+		var text = null;
+		if (param.match(/^([A-Za-z_]\w*)\s+(.*)$/) != null) {
+			keyword = RegExp.$1;
+			text = RegExp.$2;
+		}
+		if (! __isNull(keyword) && keyword != "" &&
+			! __isNull(text) && text != "") {
+			aliasManager.add(keyword, text);
+		}
+		else {
+			utils.printError("ASConsole: alias: wrong param");
+		}
+		updateConsole();
+		return true;
+	} else if (cmd == "unalias") {
+		consoleBuffer.println("> " + command);
+		var keyword = null;
+		if (param.match(/^([A-Za-z_]\w*)\s*$/) != null) {
+			keyword = RegExp.$1;
+		}
+		if (! __isNull(keyword) && keyword != "") {
+			aliasManager.remove(keyword);
+		}
+		else {
+			utils.printError("ASConsole: unalias: wrong param");
+		}
+		updateConsole();
+		return true;
+	} else if (cmd == "help") {
+		consoleBuffer.println("> " + command);
+		if (__isEmpty(__trim(param))) {
+			helpManager.help();
+		}
+		else {
+			helpManager.help(__trim(param));
+		}
+		updateConsole();
+		return true;
+	} else {
+		consoleBuffer.println("> " + command);
+		utils.printError("ASConsole: command not found");
+		updateConsole();
+		return true;
+	}
+}
+
+function parseHistoryOperation(cmd)
+{
+	if (/^# *history(?:| +(.*))$/.exec(cmd) != null) {
+		param = RegExp.$1;
+	}
+	else if (/^## *(.*)$/.exec(cmd) != null) {
+		param = RegExp.$1;
+	}
+	else {
+		return cmd;
+	}
+	if (param == "") {
+		return cmd;
+	}
+	var index = new Number(param);
+	if (isNaN(index)) {
+		return cmd;
+	}
+	index = __toFixNumber(index);
+	if (index <= 0 || index > historyBuffer.getUsed()) {
+		return cmd;
+	}
+	return historyBuffer.getText(index-1);
+}
+
+function exec()
+{
+	var cmd = __trim(cmdtext.value);
+	cmd = aliasManager.applyText(cmd);
+	cmd = parseHistoryOperation(cmd);
+	if (execCommand(cmd)) {
+		addHistoryBuffer(cmd);
+	}
+	cmdtext.focus();
+	cmdtext.value = "";
+}
+
+function showVersion()
+{
+	consoleBuffer.println(appFullName);
+	consoleBuffer.println("version " + appVersion);
+	consoleBuffer.println();
+	updateConsole();
+}
+
+function clearConsole()
+{
+	var console = document.getElementById("console");
+	consoleBuffer.clear();
+	console.value = "";
+	console.scrollTop = 0;
+}
+
+function updateConsole()
+{
+	var console = document.getElementById("console");
+	consoleBuffer.flush();
+	var n = console.scrollTop;
+	console.value = consoleBuffer.getBuffer();
+	// evade a trouble.
+	// it is necessary to set the value repeatedly.
+	// depend environment??
+	console.scrollTop = n;
+	console.scrollTop = console.scrollHeight;
+}
+
+function onKeydown()
+{
+	var code = event.keyCode;
+	if (cmdtextFocused) {
+		if (event.ctrlKey && code == 0x4d) {		// Ctrl + 'M'
+			window.event.returnValue = false;
+			layoutManager.setMultilineEdit();
+		}
+		else if (code == 33) {						// [PageUp]
+			window.event.returnValue = false;
+			nextHistoryIndex();
+		}
+		else if (code == 34) {						// [PageDown]
+			window.event.returnValue = false;
+			prevHistoryIndex();
+		}
+		else if (multilineEdit) {
+			if (event.ctrlKey && code == 38) {		// Ctrl + [up arrow]
+				window.event.returnValue = false;
+				nextHistoryIndex();
+			}
+			else if (event.ctrlKey && code == 40) {	// Ctrl + [down arrow]
+				window.event.returnValue = false;
+				prevHistoryIndex();
+			}
+			else if (event.shiftKey && code == 9) {		// Shift + TAB
+				window.event.returnValue = false;
+				tabRemove();
+			}
+			else if (code == 9) {						// TAB
+				window.event.returnValue = false;
+				tabAdd();
+			}
+			else if (code == 13) {					// [Enter]
+				var execflag = false;
+				if (multilineEnterExec) {
+					if (event.ctrlKey) {
+					}
+					else {
+						execflag = true;
+					}
+				}
+				else {
+					if (event.ctrlKey) {
+						execflag = true;
+					}
+					else {
+					}
+				}
+				if (execflag) {
+					window.event.returnValue = false;
+					exec();
+				}
+				else {
+					window.event.returnValue = false;
+					var range = document.selection.createRange();
+					range.text = "\n";
+					range.select(); 
+				}
+			}
+		}
+		else {
+			if (code == 38) {         // up arrow
+				window.event.returnValue = false;
+				nextHistoryIndex();
+			}
+			else if (code == 40) {    // down arrow
+				window.event.returnValue = false;
+				prevHistoryIndex();
+			}
+			else if (code == 13) {	// [Enter]
+				window.event.returnValue = false;
+				exec();
+			}
+		}
+	}
+}
+
+function tabAdd()
+{
+	try {
+		var range = document.selection.createRange();
+		var text = range.text;
+		var len = text.length;
+		text = text.replace(/\n/g, "\n\t");
+		text = "\t" + text;
+		if (len > 0) {
+			text = text + "\n";
+		}
+		range.text = text;
+	}
+	catch (e) {}
+}
+
+function tabRemove()
+{
+	try {
+		var range = document.selection.createRange();
+		var text = range.text;
+		var len = text.length;
+		text = text.replace(/\n\t/g, "\n");
+		if (text.charAt(0) == "\t") {
+			text = text.substring(1);
+		}
+		if (len > 0) {
+			text = text + "\n";
+		}
+		range.text = text;
+	}
+	catch (e) {}
+}
+
+function onCmdtextFocusIn()
+{
+	cmdtextFocused = true;
+}
+
+function onCmdtextFocusOut()
+{
+	cmdtextFocused = false;
+}
+
+LayoutManager = function() {
+	this.body_margin = 10;
+	this.item_margin = 5;
+	this.multilineHeight = 120;
+	this.multilineHeight_min = 40;
+
+	this.dragFlag = false;
+	this.separator_y = 0;
+	this.separator_my = 0;
+}
+
+LayoutManager.prototype.onResizeWindow = function() {
+	var edge = (document.getElementsByTagName("meta")[1].getAttribute("content") == "IE=Edge")
+	if (multilineEdit) {
+		cmdtext = document.getElementById("cmdtextm");
+		document.getElementById("cmdtexts").style.visibility = "hidden";
+		document.getElementById("cmdtextm").style.display = "inline";
+		document.getElementById("separator").style.display = "inline";
+	}
+	else {
+		cmdtext = document.getElementById("cmdtexts");
+		document.getElementById("cmdtexts").style.visibility = "visible";
+		document.getElementById("cmdtextm").style.display = "none";
+		document.getElementById("separator").style.display = "none";
+	}
+
+	var dw = document.documentElement.clientWidth - this.body_margin * 2;
+	var dh = document.documentElement.clientHeight - this.body_margin * 2;
+	var th = document.getElementById("cmdtexts").offsetHeight;
+	var lw = document.getElementById("prompt").offsetWidth;
+	var lh = document.getElementById("prompt").offsetHeight;
+	var bw = document.getElementById("execbtn").offsetWidth;
+
+	var multiEditHeight = 0;
+	var multiEditAreaHeight = 0;
+	if (multilineEdit) {
+		multiEditHeight = this.multilineHeight;
+		multiEditAreaHeight = this.multilineHeight + this.item_margin;
+	}
+	else {
+		multiEditHeight = 0;
+		multiEditAreaHeight = 0;
+	}
+
+	var csh = dh - multiEditAreaHeight - this.item_margin - th;
+	var csw = dw;
+	var cstop = this.body_margin;
+
+	var seph = this.item_margin;
+	var sepw = dw;
+	var septop = this.body_margin + csh;
+
+	var mh = multiEditHeight;
+	var mw = dw;
+	var mtop = this.body_margin + csh + seph;
+
+	document.getElementById("console").style.top = (this.body_margin) + "px";
+	document.getElementById("console").style.left = (this.body_margin) + "px";
+	if (csw >= 0) {
+		document.getElementById("console").style.width = csw + "px";
+	}
+	if (csh >= 0) {
+		document.getElementById("console").style.height = csh + "px";
+	}
+
+	if (multilineEdit) {
+		document.getElementById("separator").style.top = (septop) + "px";
+		document.getElementById("separator").style.left = (this.body_margin) + "px";
+		document.getElementById("separator").style.width = (sepw) + "px";
+		document.getElementById("separator").style.height = (this.item_margin - 2) + "px";	// -2 ÇÕ border ÇÃï‚ê≥
+
+		document.getElementById("cmdtextm").style.top = (mtop) + "px";
+		document.getElementById("cmdtextm").style.left = (this.body_margin) + "px";
+		if (mw >= 0) {
+			document.getElementById("cmdtextm").style.width = mw + "px";
+		}
+		if (mh >= 0) {
+			document.getElementById("cmdtextm").style.height = mh + "px";
+		}
+	}
+
+	var cmdtop = this.body_margin + dh - th;
+	document.getElementById("prompt").style.top = (cmdtop) + "px";
+	document.getElementById("prompt").style.left = (this.body_margin) + "px";
+	document.getElementById("cmdtexts").style.top = (cmdtop) + "px";
+	document.getElementById("cmdtexts").style.left = (this.body_margin + lw + this.item_margin) + "px";
+	if (dw - lw - bw * 2 - this.item_margin * 3 >= 0) {
+		document.getElementById("cmdtexts").style.width = (dw - lw - bw * 2 - this.item_margin * 3) + "px";
+	}
+	document.getElementById("execbtn").style.height = (th + 2)+ "px";
+	document.getElementById("execbtn").style.top = (cmdtop - 1) + "px";
+	document.getElementById("execbtn").style.left = (this.body_margin + dw - bw * 2 - 2) + "px";
+	document.getElementById("multilinebtn").style.height = (th + 2) + "px";
+	document.getElementById("multilinebtn").style.top = (cmdtop - 1) + "px";
+	document.getElementById("multilinebtn").style.left = (this.body_margin + dw - bw) + "px";
+
+	updateConsole();
+}
+
+LayoutManager.prototype.setMultilineEdit = function(enable) {
+	if (enable == null) {
+		enable = ! multilineEdit;
+	}
+	if (multilineEdit == enable) {
+		return;
+	}
+	multilineEdit = enable;
+	if (multilineEdit) {
+		document.getElementById("multilinebtn").value = utils.getText("BUTTON_SINGLELINE");
+	}
+	else {
+		document.getElementById("multilinebtn").value = utils.getText("BUTTON_MULTILINE");
+	}
+	if (historyBuffer.currentIndex != -1) {
+		if (multilineEdit) {
+			cmdtextm.value = historyBuffer.getText();
+		}
+		else {
+			cmdtexts.value = historyBuffer.getLabel();
+		}
+	}
+	else {
+		if (multilineEdit) {
+			cmdtextm.value = cmdtexts.value;
+		}
+		else {
+			cmdtexts.value = cmdtextm.value;
+		}
+	}
+	this.onResizeWindow();
+	updateConsole();
+	cmdtext.focus();
+}
+
+LayoutManager.prototype.onSeparatorMouseDown = function() {
+	if (! multilineEdit) {
+		return;
+	}
+	this.dragFlag = true;
+	document.onmousemove = function() { layoutManager.onSeparatorMouseMove(); }
+	document.onmouseup = function() { layoutManager.onSeparatorMouseUp(); }
+
+	var separator = document.getElementById("separator");
+	separator.style.borderColor = "black";
+	this.separator_y = parseInt(separator.style.top);
+	this.separator_my = event.y;
+	return false;
+}
+
+LayoutManager.prototype.onSeparatorMouseMove = function() {
+	if (! this.dragFlag) {
+		return;
+	}
+	var dy = event.y - this.separator_my;
+	var separator = document.getElementById("separator");
+	separator.style.top = (this.separator_y + dy) + "px";
+	return false;
+}
+
+LayoutManager.prototype.onSeparatorMouseUp = function() {
+	if (! this.dragFlag) {
+		return;
+	}
+	this.dragFlag = false;
+	document.body.onmousemove = null;
+	document.body.onmouseup = null;
+
+	var dy = event.y - this.separator_my;
+	var separator = document.getElementById("separator");
+	separator.style.borderColor = "menu";
+	separator.style.top = (this.separator_y + dy) + "px";
+
+	this.multilineHeight -= dy;
+	if (this.multilineHeight > document.documentElement.clientHeight - this.multilineHeight_min * 2) {
+		this.multilineHeight = document.documentElement.clientHeight - this.multilineHeight_min * 2;
+	}
+	if (this.multilineHeight < this.multilineHeight_min) {
+		this.multilineHeight = this.multilineHeight_min;
+	}
+	this.onResizeWindow();
+	updateConsole();
+	return false;
+}
+
+LayoutManager.prototype.setPrompt = function(attached) {
+	if (attached) {
+		document.getElementById("prompt").innerText = ">>>";
+	}
+	else {
+		document.getElementById("prompt").innerText = currentScript.getShortName() + ">";
+	}
+	this.onResizeWindow();
+}
+
+LayoutManager.prototype.getPrompt = function() {
+	return document.getElementById("prompt").innerText;
+}
+
+var layoutManager = new LayoutManager();
+
+window.onload = function() {
+	utils.setLanguage(navigator.browserLanguage);
+	document.getElementById("execbtn").value = utils.getText("BUTTON_EXECUTE");
+	document.getElementById("multilinebtn").value = utils.getText("BUTTON_MULTILINE");
+
+	document.getElementById("separator").style.borderStyle = "solid";
+	document.getElementById("separator").style.borderWidth = "1px";
+	document.getElementById("separator").style.borderColor = "menu";
+
+	window.onresize = function() { layoutManager.onResizeWindow(); }
+	document.getElementById("separator").onmousedown = function() { layoutManager.onSeparatorMouseDown(); }
+	document.getElementById("execbtn").onclick = exec;
+	document.getElementById("multilinebtn").onclick = function() { layoutManager.setMultilineEdit(); }
+	document.onkeydown = onKeydown;
+	document.getElementById("cmdtexts").onfocus = onCmdtextFocusIn;
+	document.getElementById("cmdtextm").onfocus = onCmdtextFocusIn;
+	document.getElementById("console").onfocus = onCmdtextFocusOut;
+	document.getElementById("execbtn").onfocus = onCmdtextFocusOut;
+	document.getElementById("multilinebtn").onfocus = onCmdtextFocusOut;
+
+	cmdtext = document.getElementById("cmdtexts");
+
+	layoutManager.onResizeWindow();
+	setTimeout(function() { layoutManager.onResizeWindow(); }, 0);
+	cmdtext.focus();
+
+	userSetting.restore();
+	changeScriptEngine(userSetting.params.currentScript, true);
+
+	document.getElementById("console").style.backgroundColor = bgColor;
+	document.getElementById("console").style.color = textColor;
+	document.getElementById("cmdtexts").style.backgroundColor = bgColor;
+	document.getElementById("cmdtexts").style.color = textColor;
+	document.getElementById("cmdtextm").style.backgroundColor = bgColor;
+	document.getElementById("cmdtextm").style.color = textColor;
+
+	showVersion();
+	if (document.getElementById("app").SINGLEINSTANCE == "no") {
+		instanceMode = "multi instance";
+		consoleBuffer.println("[[multi instance mode]]");
+		consoleBuffer.println();
+	}
+	initUserLib();
+	showScriptNames();
+	currentScript.onActive();
+	updateConsole();
+}
+
+window.onunload = function() {
+	if (document.getElementById("app").SINGLEINSTANCE == "no") {
+		return;
+	}
+	userSetting.save();
+}
+</script>
+</head>
+<body>
+<textarea id="console"></textarea>
+<textarea id="cmdtextm"></textarea>
+<div id="prompt"></div>
+<input id="cmdtexts" accesskey="L" type="text">
+<input id="execbtn" accesskey="E" type="submit" value="Exec" style="width:80px">
+<input id="multilinebtn" accesskey="M" type="button" value="Multiline" style="width:80px">
+<div id="separator"></div>
+</body>
+</html>
